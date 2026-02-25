@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Site Blocker",
+  "version": "1.0",
+  "description": "Adds friction before visiting Instagram or YouTube.",
+  "permissions": ["tabs", "webNavigation", "storage"],
+  "host_permissions": [
+    "*://*.instagram.com/*",
+    "*://*.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["blocked.html", "blocked.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "48": "icon.svg",
+    "128": "icon.svg"
+  }
+}
