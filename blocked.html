@@ -13,8 +13,8 @@
       --border: #2a2a2a;
       --text: #e8e8e8;
       --muted: #888;
-      --accent: #ff4444;
-      --accent-dim: #7a1f1f;
+      --accent: #2A6DFF;
+      --accent-dim: #1a4080;
     }
 
     body {
@@ -39,9 +39,12 @@
     }
 
     .icon {
-      font-size: 3rem;
+      width: 3rem;
+      height: auto;
       margin-bottom: 1.25rem;
-      line-height: 1;
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
     }
 
     h1 {
@@ -113,7 +116,7 @@
     }
 
     .btn-proceed.unlocked:hover {
-      background: rgba(255, 68, 68, 0.08);
+      background: rgba(42, 109, 255, 0.08);
     }
 
     #countdown {
@@ -138,7 +141,7 @@
 </head>
 <body>
   <div class="card">
-    <div class="icon">🛑</div>
+    <img src="pause.svg" alt="" class="icon" />
     <h1>You tried to visit <span id="site-name">that site</span></h1>
     <p class="tagline">Your future self will thank you.<br>Take a breath — is this how you want to spend your time?</p>
 

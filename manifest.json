@@ -18,7 +18,7 @@
     }
   ],
   "icons": {
-    "48": "icon.svg",
-    "128": "icon.svg"
+    "48": "pause-48.png",
+    "128": "pause-128.png"
   }
 }
