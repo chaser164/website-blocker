@@ -1,10 +1,24 @@
-const BLOCKED_HOSTS = ['instagram.com', 'youtube.com'];
+// Strips www. and normalises input to a bare hostname.
+// Accepts "reddit.com", "www.reddit.com", "https://reddit.com/foo", etc.
+function normaliseHost(input) {
+  let raw = input.trim();
+  if (!raw) return null;
+  // If it looks like a URL, parse it; otherwise prepend a scheme so URL() works.
+  if (!raw.includes('://')) raw = 'https://' + raw;
+  try {
+    const { hostname } = new URL(raw);
+    return hostname.replace(/^www\./, '');
+  } catch (_) {
+    return null;
+  }
+}
 
 // Returns the canonical blocked host for a URL, or null if not blocked.
-function getBaseHost(url) {
+async function getBlockedHost(url) {
   try {
     const { hostname } = new URL(url);
-    for (const h of BLOCKED_HOSTS) {
+    const { blockedSites = [] } = await chrome.storage.local.get('blockedSites');
+    for (const h of blockedSites) {
       if (hostname === h || hostname.endsWith('.' + h)) return h;
     }
   } catch (_) {}
@@ -13,7 +27,6 @@ function getBaseHost(url) {
 
 // --- Allowlist via chrome.storage.session ---
 // Structure: { allowed: { "<tabId>": ["youtube.com", ...] } }
-// Persists across service-worker sleeps; cleared when the browser closes.
 
 async function isAllowed(tabId, host) {
   const { allowed = {} } = await chrome.storage.session.get('allowed');
@@ -36,25 +49,112 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
-// blocked.js sends this when the user clicks "Proceed anyway".
-chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (msg.type !== 'ALLOW_AND_NAVIGATE' || !sender.tab) return;
-  const host = getBaseHost(msg.url);
-  if (!host) return;
-  // Whitelist tab, then navigate — doing it in this order prevents a race.
-  setAllowed(sender.tab.id, host).then(() => {
-    chrome.tabs.update(sender.tab.id, { url: msg.url });
-  });
+// --- Install defaults ---
+chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+  if (reason !== 'install') return;
+  const existing = await chrome.storage.local.get('blockedSites');
+  if (!existing.blockedSites) {
+    await chrome.storage.local.set({
+      blockedSites: ['instagram.com', 'youtube.com'],
+      pendingRemovals: {},
+    });
+  }
 });
 
+// --- Alarm handler: finalize a pending removal ---
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (!alarm.name.startsWith('remove:')) return;
+  const host = alarm.name.slice('remove:'.length);
+
+  const { blockedSites = [], pendingRemovals = {} } = await chrome.storage.local.get([
+    'blockedSites',
+    'pendingRemovals',
+  ]);
+
+  const updated = blockedSites.filter((s) => s !== host);
+  delete pendingRemovals[host];
+
+  await chrome.storage.local.set({ blockedSites: updated, pendingRemovals });
+});
+
+// --- Message handlers ---
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    switch (msg.type) {
+      case 'ALLOW_AND_NAVIGATE': {
+        if (!sender.tab) break;
+        const host = await getBlockedHost(msg.url);
+        if (!host) break;
+        await setAllowed(sender.tab.id, host);
+        chrome.tabs.update(sender.tab.id, { url: msg.url });
+        break;
+      }
+
+      case 'ADD_SITE': {
+        const host = normaliseHost(msg.host);
+        if (!host) {
+          sendResponse({ ok: false, error: 'Invalid hostname.' });
+          return;
+        }
+        const { blockedSites = [], pendingRemovals = {} } = await chrome.storage.local.get([
+          'blockedSites',
+          'pendingRemovals',
+        ]);
+        if (!blockedSites.includes(host)) {
+          blockedSites.push(host);
+        }
+        // Cancel any pending removal for this host.
+        if (pendingRemovals[host] !== undefined) {
+          delete pendingRemovals[host];
+          await chrome.alarms.clear('remove:' + host);
+        }
+        await chrome.storage.local.set({ blockedSites, pendingRemovals });
+        sendResponse({ ok: true });
+        return;
+      }
+
+      case 'REQUEST_REMOVE_SITE': {
+        const host = normaliseHost(msg.host);
+        if (!host) {
+          sendResponse({ ok: false, error: 'Invalid hostname.' });
+          return;
+        }
+        const expiresAt = Date.now() + 3_600_000; // 1 hour
+        const { pendingRemovals = {} } = await chrome.storage.local.get('pendingRemovals');
+        pendingRemovals[host] = expiresAt;
+        await chrome.storage.local.set({ pendingRemovals });
+        await chrome.alarms.create('remove:' + host, { when: expiresAt });
+        sendResponse({ ok: true, expiresAt });
+        return;
+      }
+
+      case 'CANCEL_REMOVE_SITE': {
+        const host = normaliseHost(msg.host);
+        if (!host) {
+          sendResponse({ ok: false, error: 'Invalid hostname.' });
+          return;
+        }
+        const { pendingRemovals = {} } = await chrome.storage.local.get('pendingRemovals');
+        delete pendingRemovals[host];
+        await chrome.storage.local.set({ pendingRemovals });
+        await chrome.alarms.clear('remove:' + host);
+        sendResponse({ ok: true });
+        return;
+      }
+    }
+  })();
+  // Return true to keep the message channel open for async sendResponse.
+  return true;
+});
+
+// --- Navigation interception ---
 chrome.webNavigation.onBeforeNavigate.addListener(
   async (details) => {
     if (details.frameId !== 0) return;
 
-    const host = getBaseHost(details.url);
+    const host = await getBlockedHost(details.url);
     if (!host) return;
 
-    // Let through if the user already chose to proceed in this tab.
     if (await isAllowed(details.tabId, host)) return;
 
     const blockedPage =
@@ -64,10 +164,5 @@ chrome.webNavigation.onBeforeNavigate.addListener(
 
     chrome.tabs.update(details.tabId, { url: blockedPage });
   },
-  {
-    url: BLOCKED_HOSTS.flatMap((host) => [
-      { hostEquals: host },
-      { hostSuffix: '.' + host },
-    ]),
-  }
+  { url: [{ schemes: ['http', 'https'] }] }
 );
